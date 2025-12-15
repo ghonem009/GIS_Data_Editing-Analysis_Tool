@@ -7,7 +7,7 @@ from app.config import DATA_DIR
 
 
 class GISManager:
-    def __init__(self, crs="EPSG:4326"):\
+    def __init__(self, crs="EPSG:4326"):
         self.gdf = gpd.GeoDataFrame(columns=["feature_id", "properties", "geometry"], crs=crs)
 
 
@@ -29,24 +29,12 @@ class GISManager:
         return feature_id
 
 
+    def delete_feature(self, feature_id: int):
+        before = len(self.gdf)
+        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
+        return len(self.gdf) < before
 
-
-    # def delete_feature_by_index(self, index):
-    #     if index in self.gdf.index:
-    #         self.gdf = self.gdf[self.gdf.index != index] 
-    #         print(f"this {index} has been successfully deleted")
-    #         return True
-    #     else:
-    #         print(f" This {index} has not been found ")
-    #         return False
-
-
-    def delete_feature(self, index: int):
-        if index in self.gdf.index:
-            self.gdf = self.gdf.drop(index).reset_index(drop=True)
-            return True
-        return False
-
+    
     # reproject to target_crs = EPSG:4326
     def reproject(self, target_crs ="EPSG:4326"):
         if self.gdf.crs != target_crs:
@@ -64,6 +52,7 @@ class GISManager:
         path = os.path.join(DATA_DIR, filename)
         self.gdf.to_file(path, driver="Geojson")
         return path
+
 
     # load_dataset
     def load_dataset(self, file_path: str):
@@ -116,5 +105,15 @@ class GISManager:
         self.gdf = self.gdf.dissolve(by=by, as_index=False)
         return self.gdf 
     
-
-
+    # union 
+    def union(self, feature_ids: list = None):
+        if feature_ids:
+            features = self.gdf[self.gdf['feature_id'].isin(feature_ids)]
+        else:
+            features = self.gdf
+        
+        if len(features) == 0:
+            return None
+        
+        union_geom = features.geometry.unary_union
+        return union_geom
