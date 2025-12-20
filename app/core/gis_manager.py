@@ -31,7 +31,8 @@ class GISManager:
 
     def delete_feature(self, feature_id: int):
         before = len(self.gdf)
-        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
+        # self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
+        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id]
         return len(self.gdf) < before
 
     
