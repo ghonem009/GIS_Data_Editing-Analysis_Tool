@@ -67,7 +67,7 @@ class GISManager:
     def buffer(self, distance: float, feature_id: int = None):
         original_crs = self.gdf.crs
         projected = self.gdf.to_crs(epsg=32636)
-        
+
         if feature_id is not None:
             mask = self.gdf["feature_id"] == feature_id
             self.gdf.loc[mask, "geometry"] = self.gdf.loc[mask, "geometry"].buffer(distance)
@@ -136,15 +136,23 @@ class GISManager:
             return None
         geom = shape(geom_dict)
         geom = make_valid(geom) if not geom.is_valid else geom
-        distances = self.gdf.geometry.distance(geom)
+
+        original_crs = self.gdf.crs
+
+        gdf_proj = self.gdf.to_crs(epsg=32636)
+        geom_proj = gpd.GeoSeries([geom], crs=original_crs).to_crs(epsg=32636).iloc[0]
+
+        distances = gdf_proj.geometry.distance(geom_proj)
         idx = distances.idxmin()
-        nearst_row = self.gdf.loc[idx]
-        self.gdf.drop(columns="distance", inplace= True)
+
+        row = self.gdf.loc[idx]
 
         return {
-            "feature_id": int(nearst_row["feature_id"]),
-            "properties": nearst_row["properties"],
-            "geometry": nearst_row["geometry"].__geo_interface__
-        }
+        "feature_id": int(row["feature_id"]),
+        "properties": row["properties"],
+        "geometry": row["geometry"].__geo_interface__,
+        "distance_meters": float(distances.loc[idx])
+    }
+
 
     
