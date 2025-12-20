@@ -14,8 +14,8 @@ class GISManager:
 
 
     # add feature
-    def add_feature(self, geom_dict, properties: dict):
-        geom = parse_geometry(geom_dict, fmt="geojson", fix_topology=True)
+    def add_feature(self, geom_dict, properties: dict, fix_topology=False):
+        geom = parse_geometry(geom_dict, fmt="geojson", fix_topology=fix_topology)
         validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
         feature_id = int(self.gdf["feature_id"].max() + 1) if not self.gdf.empty else 1
         new_row = {
@@ -32,6 +32,21 @@ class GISManager:
         before = len(self.gdf)
         self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
         return len(self.gdf) < before
+    
+
+    def update_feature(self, feature_id: int, new_geom=None, new_properties=None, fix_topology=False):
+        mask = self.gdf["feature_id"] == feature_id
+        if mask.sum() == 0:
+            raise ValueError("Feature not found")
+        if new_geom is not None:
+            geom = parse_geometry(new_geom, fix_topology=fix_topology)
+            validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
+            self.gdf.loc[mask, "geometry"] = geom
+        if new_properties is not None:
+            self.gdf.loc[mask, "properties"] = new_properties
+
+        return feature_id
+
 
     
     # reproject to target_crs = EPSG:4326

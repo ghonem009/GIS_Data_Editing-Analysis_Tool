@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 class FeatureCreate(BaseModel):
     geometry: Dict[str, Any]
     properties: Dict[str, Any] = Field(default_factory=dict)
+    fix_topology: bool = False 
 
 class CRSModel(BaseModel):
     target_crs : str = "EPSG:4326"
@@ -30,3 +31,9 @@ class DissolveRequest(BaseModel):
 
 class UnionRequest(BaseModel):
     feature_ids: Optional[List[int]] 
+
+
+class FeatureUpdate(BaseModel):
+    geometry: Optional[Dict[str, Any]] = None
+    properties: Optional[Dict[str, Any]] = None
+    fix_topology: bool = False

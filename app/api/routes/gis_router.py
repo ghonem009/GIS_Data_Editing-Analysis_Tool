@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 from app.core.gis_manager import GISManager
-from app.schemas.feature_schemas import FeatureCreate, CRSModel, BufferRequest, GeometryRequest, UnionRequest, SimplifyRequest, DissolveRequest
+from app.schemas.feature_schemas import FeatureCreate, CRSModel, BufferRequest, GeometryRequest, UnionRequest, SimplifyRequest, DissolveRequest, FeatureUpdate
 from app.config import DATA_DIR
 import os 
 import json
@@ -15,7 +15,7 @@ gis = GISManager()
 # ==>> featurs endpoints
 @router.post("/add")
 def add_feature(data : FeatureCreate):
-    feature_id = gis.add_feature(data.geometry, data.properties)
+    feature_id = gis.add_feature(data.geometry, data.properties,fix_topology=data.fix_topology)
     return {
         "status": "success",
         "feature_id": feature_id
@@ -63,6 +63,25 @@ def upload_dataset(file: UploadFile = File(...)):
         "status": "success",
         "filename": filename
     }
+
+
+@router.put("/update/{feature_id}")
+def update_feature_endpoint(feature_id: int, data: FeatureUpdate):
+    try:
+        updated_id = gis.update_feature(
+            feature_id=feature_id,
+            new_geom=data.geometry,
+            new_properties=data.properties,
+            fix_topology=data.fix_topology
+        )
+        return {
+            "status": "success",
+            "feature_id": updated_id
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update failed: {str(e)}")
 
 
 # ==>> geometry oprations endpoints
