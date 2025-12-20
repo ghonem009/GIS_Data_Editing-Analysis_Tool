@@ -57,11 +57,15 @@ class GISManager:
 
 
     # load_dataset
-    def load_dataset(self, file_path: str):
+    def load_dataset(self, file_path: str, source_crs: str = None):
         self.gdf = gpd.read_file(file_path)
         if self.gdf.crs is None:
-            self.gdf.set_crs("EPSG:4326", inplace=True)
+            if source_crs is None:
+                raise ValueError("Please provide source_crs ")
+            self.gdf.set_crs(source_crs, inplace=True)
 
+        if str(self.gdf.crs) != "EPSG:4326":
+            self.gdf = self.gdf.to_crs("EPSG:4326")
         return self.gdf
 
 
