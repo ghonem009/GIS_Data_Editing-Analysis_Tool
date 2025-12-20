@@ -17,9 +17,6 @@ class GISManager:
     def add_feature(self, geom_dict, properties: dict):
         geom = parse_geometry(geom_dict, fmt="geojson", fix_topology=True)
         validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
-        if not geom.is_valid:
-            geom = make_valid(geom)
-
         feature_id = int(self.gdf["feature_id"].max() + 1) if not self.gdf.empty else 1
         new_row = {
             "feature_id": feature_id,
