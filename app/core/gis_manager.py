@@ -173,4 +173,24 @@ class GISManager:
     }
 
 
-    
+    # 2 - spatial_join
+    def spatial_join(self, other_gdf, how="inner", predicate="intersects"):
+        if self.gdf.empty or other_gdf.empty:
+            return gpd.GeoDataFrame()  
+        joined = gpd.sjoin(self.gdf, other_gdf, how=how, predicate=predicate)
+        return joined
+
+    # 3- summary_statistics
+    def summary_statistics(self, feature_id: int = None):
+        df = self.gdf if feature_id is None else self.gdf[self.gdf["feature_id"] == feature_id]
+        stats = []
+        for _, row in df.iterrows():
+            geom = row.geometry
+            stats.append({
+                "feature_id": row.feature_id,
+                "area": geom.area,
+                "length": geom.length,
+                "centroid": geom.centroid.__geo_interface__,
+                "bounding_box": geom.bounds
+            })
+        return stats

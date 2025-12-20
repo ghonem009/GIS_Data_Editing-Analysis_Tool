@@ -171,3 +171,23 @@ def dissolve_operation(data: DissolveRequest):
 
 
 
+@router.post("/analysis/spatial_join")
+def spatial_join_endpoint(other_file: UploadFile = File(...)):
+    filename = other_file.filename
+    file_path = os.path.join(DATA_DIR, filename)
+
+    content = other_file.file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    other_gdf = gpd.read_file(file_path)
+
+    joined = gis.spatial_join(other_gdf)
+    return {"status": "success", "joined_count": len(joined), "features": json.loads(joined.to_json())}
+
+
+
+@router.get("/analysis/summary_statistics")
+def summary_statistics_endpoint(feature_id: int = None):
+    stats = gis.summary_statistics(feature_id=feature_id)
+    return {"status": "success", "statistics": stats}
