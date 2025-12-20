@@ -18,7 +18,7 @@ class GISManager:
         if not geom.is_valid:
             geom = make_valid(geom)
 
-        feature_id = len(self.gdf) + 1 
+        feature_id = int(self.gdf["feature_id"].max() + 1) if not self.gdf.empty else 1
         new_row = {
             "feature_id": feature_id,
             "properties": properties,
