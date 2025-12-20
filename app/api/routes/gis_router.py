@@ -66,13 +66,19 @@ def upload_dataset(file: UploadFile = File(...)):
 # ==>> geometry oprations endpoints
 @router.post("/analysis/buffer")
 def buffer_operation(data: BufferRequest):
-    gis.buffer(distance=data.distance, feature_id=data.feature_id)
-    return {
-        "status": "success",
-        "operation": "buffer",
-        "distance": data.distance,
-        "feature_id": data.feature_id
-    }
+    try:
+        gis.buffer(distance=data.distance, feature_id=data.feature_id)
+        return {
+            "status": "success",
+            "operation": "buffer",
+            "distance": data.distance,
+            "feature_id": data.feature_id
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Buffer operation failed: {str(e)}")
+    
 
 
 @router.post("/analysis/clip")
@@ -83,7 +89,7 @@ def clip_operation(data: GeometryRequest):
         "status": "success",
         "operation": "clip",
         "features": clipped_geojson,
-        "count": len(clipped)
+        "clipped": clipped
     }
 
 

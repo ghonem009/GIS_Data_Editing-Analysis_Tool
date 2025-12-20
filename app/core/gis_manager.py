@@ -57,7 +57,6 @@ class GISManager:
     # load_dataset
     def load_dataset(self, file_path: str):
         self.gdf = gpd.read_file(file_path)
-
         if self.gdf.crs is None:
             self.gdf.set_crs("EPSG:4326", inplace=True)
 
@@ -65,8 +64,13 @@ class GISManager:
 
 
     # buffer
-    def buffer(self, distance: float):
-        self.gdf["geometry"] =  self.gdf.geometry.buffer(distance)
+    def buffer(self, distance: float, feature_id: int = None):
+        if feature_id:
+            mask = self.gdf["feature_id"] == feature_id
+            self.gdf.loc[mask, "geometry"] = self.gdf.loc[mask, "geometry"].buffer(distance)
+        else:
+            self.gdf["geometry"] = self.gdf.geometry.buffer(distance)
+        return self.gdf
         
 
 
@@ -117,3 +121,25 @@ class GISManager:
         
         union_geom = features.geometry.unary_union
         return union_geom
+
+
+    # spatial analysis 
+
+    # 1- nearset_neighbor  
+    def nearset_neighbor(self, geom_dict: dict):
+        if self.gdf.empty:
+            return None
+        geom = shape(geom_dict)
+        geom = make_valid(geom) if not geom.is_valid else geom
+
+        self.gdf["distance"] = self.gdf.geometry.distance(geom)
+        nearst_row = self.gdf.loc[self.gdf["distance"].idxmin()]
+        self.gdf.drop(columns="distance", inplace= True)
+
+        return {
+            "feature_id": int(nearst_row["feature_id"]),
+            "properties": nearst_row["properties"],
+            "geometry": nearst_row["geometry"].__geo_interface__
+        }
+
+    
