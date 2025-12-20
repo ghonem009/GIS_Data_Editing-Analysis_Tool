@@ -4,6 +4,8 @@ from shapely.validation import make_valid
 import pandas as pd 
 import os 
 from app.config import DATA_DIR
+from app.core.geometry_utils import parse_geometry, validate_geometry_type
+
 
 
 class GISManager:
@@ -13,8 +15,8 @@ class GISManager:
 
     # add feature
     def add_feature(self, geom_dict, properties: dict):
-        geom = shape(geom_dict)
-
+        geom = parse_geometry(geom_dict, fmt="geojson", fix_topology=True)
+        validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
         if not geom.is_valid:
             geom = make_valid(geom)
 
