@@ -5,6 +5,8 @@ from app.schemas.feature_schemas import FeatureCreate, CRSModel, BufferRequest, 
 from app.config import DATA_DIR
 import os 
 import json
+from shapely.geometry import mapping
+
 
 router = APIRouter(prefix="/feature", tags=["Features"])
 gis = GISManager()
@@ -89,7 +91,6 @@ def clip_operation(data: GeometryRequest):
         "status": "success",
         "operation": "clip",
         "features": clipped_geojson,
-        "clipped": clipped
     }
 
 
@@ -107,9 +108,9 @@ def intersect_operation(data: GeometryRequest):
 
 @router.post("/analysis/union")
 def union_operation(data: UnionRequest):
-    from shapely.geometry import mapping
-    
     union_geom = gis.union(feature_ids=data.feature_ids)
+    if union_geom is None:
+        raise HTTPException(400, "No features to union")
     union_geojson = mapping(union_geom)
     
     return {

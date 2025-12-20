@@ -31,14 +31,13 @@ class GISManager:
 
     def delete_feature(self, feature_id: int):
         before = len(self.gdf)
-        # self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
-        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id]
+        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
         return len(self.gdf) < before
 
     
     # reproject to target_crs = EPSG:4326
     def reproject(self, target_crs ="EPSG:4326"):
-        if self.gdf.crs != target_crs:
+        if str(self.gdf.crs) != target_crs:
             self.gdf = self.gdf.to_crs(target_crs)
         print(f"Reprojected to {target_crs} is done ")
 
@@ -51,7 +50,7 @@ class GISManager:
     # save file 
     def save(self, filename ="output.geojson"):
         path = os.path.join(DATA_DIR, filename)
-        self.gdf.to_file(path, driver="Geojson")
+        self.gdf.to_file(path, driver="GeoJSON")
         return path
 
 
@@ -66,7 +65,7 @@ class GISManager:
 
     # buffer
     def buffer(self, distance: float, feature_id: int = None):
-        if feature_id:
+        if feature_id is not None:
             mask = self.gdf["feature_id"] == feature_id
             self.gdf.loc[mask, "geometry"] = self.gdf.loc[mask, "geometry"].buffer(distance)
         else:
@@ -126,15 +125,15 @@ class GISManager:
 
     # spatial analysis 
 
-    # 1- nearset_neighbor  
-    def nearset_neighbor(self, geom_dict: dict):
+    # 1- nearest_neighbor  
+    def nearest_neighbor(self, geom_dict: dict):
         if self.gdf.empty:
             return None
         geom = shape(geom_dict)
         geom = make_valid(geom) if not geom.is_valid else geom
-
-        self.gdf["distance"] = self.gdf.geometry.distance(geom)
-        nearst_row = self.gdf.loc[self.gdf["distance"].idxmin()]
+        distances = self.gdf.geometry.distance(geom)
+        idx = distances.idxmin()
+        nearst_row = self.gdf.loc[idx]
         self.gdf.drop(columns="distance", inplace= True)
 
         return {

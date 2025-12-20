@@ -1,11 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 
 class FeatureCreate(BaseModel):
     geometry: Dict[str, Any]
-    properties: Dict[str, Any] = {}
-
+    properties: Dict[str, Any] = Field(default_factory=dict)
 
 class CRSModel(BaseModel):
     target_crs : str = "EPSG:4326"
