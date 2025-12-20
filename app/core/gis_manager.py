@@ -65,11 +65,16 @@ class GISManager:
 
     # buffer
     def buffer(self, distance: float, feature_id: int = None):
+        original_crs = self.gdf.crs
+        projected = self.gdf.to_crs(epsg=32636)
+        
         if feature_id is not None:
             mask = self.gdf["feature_id"] == feature_id
             self.gdf.loc[mask, "geometry"] = self.gdf.loc[mask, "geometry"].buffer(distance)
         else:
             self.gdf["geometry"] = self.gdf.geometry.buffer(distance)
+
+        self.gdf = projected.to_crs(original_crs)
         return self.gdf
         
 
