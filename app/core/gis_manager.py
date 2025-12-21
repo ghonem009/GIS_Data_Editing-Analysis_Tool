@@ -11,6 +11,7 @@ from app.core.geometry_utils import parse_geometry, validate_geometry_type
 class GISManager:
     def __init__(self, crs="EPSG:4326"):
         self.gdf = gpd.GeoDataFrame(columns=["feature_id", "properties", "geometry"], crs=crs)
+        self.gdf.set_crs(crs, inplace=True)
 
 
     # add feature
@@ -25,6 +26,7 @@ class GISManager:
         }
 
         self.gdf.loc[len(self.gdf)] = new_row
+        self.gdf.set_geometry("geometry", inplace=True)
         return feature_id
 
 
@@ -76,6 +78,7 @@ class GISManager:
                 raise ValueError("Please provide source_crs ")
             self.gdf.set_crs(source_crs, inplace=True)
 
+        self.gdf.set_geometry("geometry", inplace=True)
         if str(self.gdf.crs) != "EPSG:4326":
             self.gdf = self.gdf.to_crs("EPSG:4326")
         return self.gdf
@@ -83,17 +86,18 @@ class GISManager:
 
     # buffer
     def buffer(self, distance: float, feature_id: int = None):
+        if self.gdf.crs is None:
+            raise ValueError("CRS is not set for GeoDataFrame")
         original_crs = self.gdf.crs
         projected = self.gdf.to_crs(epsg=32636)
-
         if feature_id is not None:
-            mask = self.gdf["feature_id"] == feature_id
-            self.gdf.loc[mask, "geometry"] = self.gdf.loc[mask, "geometry"].buffer(distance)
+            mask = projected["feature_id"] == feature_id
+            projected.loc[mask, "geometry"] = projected.loc[mask, "geometry"].buffer(distance)
         else:
-            self.gdf["geometry"] = self.gdf.geometry.buffer(distance)
-
+            projected["geometry"] = projected.geometry.buffer(distance)
         self.gdf = projected.to_crs(original_crs)
         return self.gdf
+
         
 
 
@@ -179,6 +183,8 @@ class GISManager:
             return gpd.GeoDataFrame()  
         joined = gpd.sjoin(self.gdf, other_gdf, how=how, predicate=predicate)
         return joined
+    
+
 
     # 3- summary_statistics
     def summary_statistics(self, feature_id: int = None):

@@ -1,9 +1,10 @@
 from fastapi import FastAPI
-from app.api.routes import gis_router
+from app.api.routes.gis_router import feature_router, analysis_router  
 
 app = FastAPI(title="GIS Backend")
 
-app.include_router(gis_router.router)
+app.include_router(feature_router)
+app.include_router(analysis_router)
 
 @app.get("/")
 def home():
