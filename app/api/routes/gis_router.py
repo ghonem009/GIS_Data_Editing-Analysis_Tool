@@ -6,7 +6,7 @@ from app.config import DATA_DIR
 import os 
 import json
 from shapely.geometry import mapping
-
+import geopandas as gpd
 
 feature_router = APIRouter(prefix="/feature", tags=["Feature Editing"])
 analysis_router = APIRouter(prefix="/analysis", tags=["Spatial Analysis"])
