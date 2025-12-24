@@ -1,18 +1,93 @@
 import geopandas as gpd 
 from shapely.geometry import shape
 from shapely.validation import make_valid
-import pandas as pd 
-import os 
-from app.config import DATA_DIR
+import json 
+from sqlalchemy.dialects.postgresql import JSONB
+from geoalchemy2 import Geometry
+from sqlalchemy import text
+from app.config import engine
 from app.core.geometry_utils import parse_geometry, validate_geometry_type
-
 
 
 class GISManager:
     def __init__(self, crs="EPSG:4326"):
-        self.gdf = gpd.GeoDataFrame(columns=["feature_id", "properties", "geometry"], crs=crs)
-        self.gdf.set_crs(crs, inplace=True)
 
+        self.engine = engine
+        self.table_name = "features"
+        self.crs = crs
+        self.load_from_db()
+
+    def load_from_db(self):
+
+        try:
+            self.gdf = gpd.read_postgis(
+                f"SELECT * FROM {self.table_name}",
+                self.engine,
+                geom_col="geometry"
+            )
+
+            if self.gdf.crs is None:
+                self.gdf.set_crs(epsg=4326, inplace=True)
+            
+            if "properties" in self.gdf.columns:
+                # -> [string or list >> json object]
+                def fix_properties(properties):
+                    if isinstance(properties, dict):
+                        return properties
+                    if isinstance(properties, str):
+                        try:
+                            return json.loads(properties)
+                        except Exception:
+                            return {}
+                    return {}
+                
+                self.gdf["properties"] = self.gdf["properties"].apply(fix_properties)
+
+        except Exception:
+            self.gdf = gpd.GeoDataFrame(
+                columns=["feature_id", "properties", "geometry"],
+                crs=self.crs
+            )
+
+    
+    def save_to_db(self, update_only=False):
+        if not update_only:
+            self.gdf["properties"] = self.gdf["properties"].apply(
+                lambda v: json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v
+            )
+
+            self.gdf.to_postgis(
+                name=self.table_name,
+                con=self.engine,
+                if_exists="replace",
+                index=False,
+                dtype={
+                    "geometry": Geometry("GEOMETRY", srid=4326),
+                    "properties": JSONB()
+                }
+            )
+
+        else:
+            sql = text("""
+                UPDATE features
+                SET geometry = ST_GeomFromText(:geometry, 4326),
+                    properties = :properties
+                WHERE feature_id = :feature_id
+            """)
+
+            data = [
+                {
+                    "geometry": r.geometry.wkt,
+                    "properties": json.dumps(r.properties, ensure_ascii=False)
+                    if isinstance(r.properties, dict)
+                    else r.properties,
+                    "feature_id": int(r.feature_id)
+                }
+                for r in self.gdf.itertuples(index=False)
+            ]
+
+            with self.engine.begin() as conn:
+                conn.execute(sql, data)
 
     # add feature
     def add_feature(self, geom_dict, properties: dict, fix_topology=False):
@@ -27,6 +102,7 @@ class GISManager:
 
         self.gdf.loc[len(self.gdf)] = new_row
         self.gdf.set_geometry("geometry", inplace=True)
+        self.save_to_db()
         return feature_id
 
 
@@ -39,7 +115,7 @@ class GISManager:
     def update_feature(self, feature_id: int, new_geom=None, new_properties=None, fix_topology=False):
         mask = self.gdf["feature_id"] == feature_id
         if mask.sum() == 0:
-            raise ValueError("Feature not found")
+            raise ValueError("feature not found")
         if new_geom is not None:
             geom = parse_geometry(new_geom, fix_topology=fix_topology)
             validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
@@ -58,54 +134,37 @@ class GISManager:
         print(f"Reprojected to {target_crs} is done ")
 
 
-    # show_geoDF
-    def show_geoDF(self):
-        print(self.gdf)
-
-
-    # save file 
-    def save(self, filename ="output.geojson"):
-        path = os.path.join(DATA_DIR, filename)
-        self.gdf.to_file(path, driver="GeoJSON")
-        return path
-
-
-    # load_dataset
-    def load_dataset(self, file_path: str, source_crs: str = None):
-        self.gdf = gpd.read_file(file_path)
-        if self.gdf.crs is None:
-            if source_crs is None:
-                raise ValueError("Please provide source_crs ")
-            self.gdf.set_crs(source_crs, inplace=True)
-
-        self.gdf.set_geometry("geometry", inplace=True)
-        if str(self.gdf.crs) != "EPSG:4326":
-            self.gdf = self.gdf.to_crs("EPSG:4326")
-        return self.gdf
-
-
-    # buffer
     def buffer(self, distance: float, feature_id: int = None):
         if self.gdf.crs is None:
-            raise ValueError("CRS is not set for GeoDataFrame")
+            self.gdf.set_crs(epsg=4326, inplace=True)
+
+        self.load_from_db()
+
         original_crs = self.gdf.crs
         projected = self.gdf.to_crs(epsg=32636)
+
         if feature_id is not None:
             mask = projected["feature_id"] == feature_id
+            if mask.sum() == 0:
+                raise ValueError(f"Feature ID {feature_id} not found")
             projected.loc[mask, "geometry"] = projected.loc[mask, "geometry"].buffer(distance)
         else:
             projected["geometry"] = projected.geometry.buffer(distance)
+
         self.gdf = projected.to_crs(original_crs)
+
+        self.save_to_db(update_only=True)
+
         return self.gdf
 
-        
-
-
+    
     # intersect
     def intersect(self, geom_dict: dict):
         geom = shape(geom_dict)
         geom = make_valid(geom) if not geom.is_valid else geom
         result = self.gdf[self.gdf.geometry.intersects(geom)]
+        self.save_to_db(update_only=True)
+        result.save_to_db(update_only=True)
         return result
     
 
@@ -115,6 +174,7 @@ class GISManager:
         mask = shape(geom_dict)
         mask = make_valid(mask) if not mask.is_valid else mask
         clipped = gpd.clip(self.gdf, mask)
+        self.save_to_db(update_only=True)
         return clipped
     
 
@@ -151,7 +211,6 @@ class GISManager:
 
 
     # spatial analysis 
-
     # 1- nearest_neighbor  
     def nearest_neighbor(self, geom_dict: dict):
         if self.gdf.empty:
@@ -200,3 +259,5 @@ class GISManager:
                 "bounding_box": geom.bounds
             })
         return stats
+
+                
