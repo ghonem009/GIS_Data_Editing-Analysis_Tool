@@ -37,3 +37,4 @@ class FeatureUpdate(BaseModel):
     geometry: Optional[Dict[str, Any]] = None
     properties: Optional[Dict[str, Any]] = None
     fix_topology: bool = False
+    

@@ -164,9 +164,8 @@ class GISManager:
         geom = make_valid(geom) if not geom.is_valid else geom
         result = self.gdf[self.gdf.geometry.intersects(geom)]
         self.save_to_db(update_only=True)
-        result.save_to_db(update_only=True)
         return result
-    
+        
 
 
     # clip
@@ -174,7 +173,8 @@ class GISManager:
         mask = shape(geom_dict)
         mask = make_valid(mask) if not mask.is_valid else mask
         clipped = gpd.clip(self.gdf, mask)
-        self.save_to_db(update_only=True)
+        self.gdf = clipped
+        self.save_to_db()
         return clipped
     
 
@@ -189,6 +189,7 @@ class GISManager:
             self.gdf["geometry"] = self.gdf.geometry.simplify(tolerance)
         return self.gdf
     
+     
 
 
     # dissolve by attribute 
@@ -258,6 +259,4 @@ class GISManager:
                 "centroid": geom.centroid.__geo_interface__,
                 "bounding_box": geom.bounds
             })
-        return stats
-
-                
+        return stats  
