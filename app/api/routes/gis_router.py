@@ -7,6 +7,8 @@ import os
 import json
 from shapely.geometry import mapping
 import geopandas as gpd
+from fastapi import Query
+
 
 feature_router = APIRouter(prefix="/feature", tags=["Feature Editing"])
 analysis_router = APIRouter(prefix="/analysis", tags=["Spatial Analysis"])
@@ -189,3 +191,18 @@ def dissolve_operation(data: DissolveRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Dissolve operation failed: {str(e)}")
+
+@analysis_router.get("/results")
+def show_analysis_results():
+    try:
+        results = gis.get_analysis_results()
+        if results.empty:
+            return {"status": "success", "count": 0, "message": "No results yet"}
+        
+        return {
+            "status": "success",
+            "count": len(results),
+            "results": json.loads(results.to_json())
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}

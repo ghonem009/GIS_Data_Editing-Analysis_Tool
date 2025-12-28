@@ -153,6 +153,12 @@ class GISManager:
 
     # reproject to target_crs = EPSG:4326
     def reproject(self, target_crs ="EPSG:4326"):
+        '''
+        Docstring for reproject
+        
+        :param self: Description
+        :param target_crs: Description
+        '''
         if str(self.gdf.crs) != target_crs:
             self.gdf = self.gdf.to_crs(target_crs)
         print(f"reprojected to {target_crs} is done ")
@@ -212,9 +218,19 @@ class GISManager:
             result_id = conn.execute(text("SELECT MAX(result_id) FROM analysis_results")).scalar()
 
         return result_id, result_gdf
-
-
     
+    def get_analysis_results(self, result_id: int = None):
+        try:
+            query = f"SELECT * FROM {self.results_table}"
+            if result_id:
+                query += f" WHERE result_id = {result_id}"
+            
+            results = gpd.read_postgis(query, self.engine, geom_col="geometry")
+            return results
+        except:
+            return gpd.GeoDataFrame()
+
+
     # intersect
     def intersect(self, geom_dict: dict):
         '''read only operation / query operation
