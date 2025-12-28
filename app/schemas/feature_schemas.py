@@ -7,13 +7,16 @@ class FeatureCreate(BaseModel):
     properties: Dict[str, Any] = Field(default_factory=dict)
     fix_topology: bool = False 
 
-class CRSModel(BaseModel):
-    target_crs : str = "EPSG:4326"
+
+class FeatureUpdate(BaseModel):
+    geometry: Optional[Dict[str, Any]] = None
+    properties: Optional[Dict[str, Any]] = None
+    fix_topology: bool = False
 
 
 class BufferRequest(BaseModel):
     distance: float
-    feature_id: Optional[int]
+    feature_id: Optional[int] = None 
 
 
 class GeometryRequest(BaseModel):
@@ -22,19 +25,13 @@ class GeometryRequest(BaseModel):
 
 class SimplifyRequest(BaseModel):
     tolerance: float
-    simplify_coverage: bool 
-    simplify_boundary: bool
+    simplify_coverage: bool = True
+    simplify_boundary: bool = True
+
 
 class DissolveRequest(BaseModel):
     by: str
 
 
 class UnionRequest(BaseModel):
-    feature_ids: Optional[List[int]] 
-
-
-class FeatureUpdate(BaseModel):
-    geometry: Optional[Dict[str, Any]] = None
-    properties: Optional[Dict[str, Any]] = None
-    fix_topology: bool = False
-    
+    feature_ids: Optional[List[int]] = None  

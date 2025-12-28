@@ -68,13 +68,14 @@ def show_features():
 @analysis_router.post("/buffer")
 def buffer_operation(data: BufferRequest):
     try:
-        gis.buffer(distance=data.distance, feature_id=data.feature_id)
+        result_id, result_gdf = gis.buffer(distance=data.distance, feature_id=data.feature_id)
         return {
             "status": "success",
             "operation": "buffer",
             "distance": data.distance,
-            "feature_id": data.feature_id
-        }
+            "feature_id": data.feature_id,
+            "result_id": result_id,
+            }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
