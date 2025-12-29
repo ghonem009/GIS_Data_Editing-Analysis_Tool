@@ -16,7 +16,7 @@ analysis_router = APIRouter(prefix="/analysis", tags=["Spatial Analysis"])
 gis = GISManager()
 
 
-# ==>> featurs endpoints
+# ==>> features endpoints
 @feature_router.post("/add")
 def add_feature(data: FeatureCreate):
     """Add new feature to the database."""

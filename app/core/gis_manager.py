@@ -1,89 +1,106 @@
-import geopandas as gpd 
+import geopandas as gpd
 from shapely.geometry import shape
 from shapely.validation import make_valid
-import json 
+import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.dialects.postgresql import JSONB
 from geoalchemy2 import Geometry
-from sqlalchemy import text, Table, Column, Integer, MetaData, ARRAY
-from app.config import engine
+from sqlalchemy import text, Table, Column, Integer, String, DateTime, MetaData, ARRAY
+from datetime import datetime
+from app.config import sync_engine, async_engine
 from app.core.geometry_utils import parse_geometry, validate_geometry_type
 
 
 class GISManager:
     def __init__(self, crs="EPSG:4326"):
 
-        self.engine = engine
+        self.sync_engine = sync_engine
+        self.async_engine = async_engine
         self.features_table = "features"    
         self.results_table = "analysis_results"
         self.crs = crs
-        self.tables_exist()
-        self.load_from_db()
+        self.executor = ThreadPoolExecutor(max_workers=4)
+        self.gdf = None
 
-    def tables_exist(self):
+    async def tables_exist(self):
 
         metadata = MetaData()
 
-        if not self.engine.dialect.has_table(self.engine.connect(), self.results_table):
-            results_table = Table(
-                self.results_table,
-                metadata,
-                Column('result_id', Integer, primary_key=True, autoincrement=True),
-                Column('source_feature_ids', ARRAY(Integer)),
-                Column('geometry', Geometry('GEOMETRY', srid=4326)),
-                Column('properties', JSONB)
-            )
-            metadata.create_all(self.engine)
+        Table(
+            self.results_table,
+            metadata,
+            Column('result_id', Integer, primary_key=True, autoincrement=True),
+            Column('source_feature_ids', ARRAY(Integer)),
+            Column('geometry', Geometry('GEOMETRY', srid=4326)),
+            Column('properties', JSONB)
+        )
 
-    def load_from_db(self, table_name= None):
-        table = table_name or self.features_table  
-        try:
-            self.gdf = gpd.read_postgis(
-                f"SELECT * FROM {table}",
-                self.engine,
-                geom_col="geometry"
-            )
+        async with self.async_engine.begin() as conn:
+            await conn.run_sync(metadata.create_all)
 
-            if self.gdf.crs is None:
-                self.gdf.set_crs(epsg=4326, inplace=True)
-            
-            if "properties" in self.gdf.columns:
-                # -> [string or list >> json object]  >> check if propersties is dict or  str 
-                def fix_properties(properties):
-                    if isinstance(properties, dict):
-                        return properties
-                    if isinstance(properties, str):
-                        try:
-                            return json.loads(properties)
-                        except Exception:
-                            return {}
-                    return {}
-                
-                self.gdf["properties"] = self.gdf["properties"].apply(fix_properties)
+    async def load_from_db(self, table_name=None):
+        table = table_name or self.features_table
 
-        except Exception:
-            self.gdf = gpd.GeoDataFrame(
-                columns=["feature_id", "properties", "geometry"],
-                crs=self.crs
-            )
+        def _load():
+            try:
+                gdf = gpd.read_postgis(
+                    f"SELECT * FROM {table}",
+                    self.sync_engine,
+                    geom_col="geometry"
+                )
 
-    
-    def save_to_db(self, update_only=False):
+                if gdf.crs is None:
+                    gdf.set_crs(epsg=4326, inplace=True)
+
+                if "properties" in gdf.columns:
+                    # -> [string or list >> json object]  >> check if properties is dict or  str 
+                    def fix_properties(properties):
+                        if isinstance(properties, dict):
+                            return properties
+                        if isinstance(properties, str):
+                            try:
+                                return json.loads(properties)
+                            except Exception:
+                                return {}
+                        return {}
+
+                    gdf["properties"] = gdf["properties"].apply(fix_properties)
+
+                return gdf
+
+            except Exception:
+                return gpd.GeoDataFrame(
+                    columns=["feature_id", "properties", "geometry"],
+                    crs=self.crs
+                )
+
+        loop = asyncio.get_running_loop()
+        self.gdf = await loop.run_in_executor(self.executor, _load)
+        return self.gdf
+
+    async def save_to_db(self, update_only=False):
         if not update_only:
-            temp_gdf = self.gdf.copy()
-            temp_gdf["properties"] = temp_gdf["properties"].apply(
-                lambda v: json.dumps(v, ensure_ascii=False) if isinstance(v, dict) else v
-            )
+            def _save():
+                temp_gdf = self.gdf.copy()
+                temp_gdf["properties"] = temp_gdf["properties"].apply(
+                    lambda v: json.dumps(v, ensure_ascii=False)
+                    if isinstance(v, dict) else v
+                )
 
-            temp_gdf.to_postgis(  
-                name=self.features_table, 
-                con=self.engine,
-                if_exists="replace",
-                index=False,
-                dtype={
-                    "geometry": Geometry("GEOMETRY", srid=4326),
-                    "properties": JSONB()
-                }
-            )
+                temp_gdf.to_postgis(
+                    name=self.features_table,
+                    con=self.sync_engine,
+                    if_exists="replace",
+                    index=False,
+                    dtype={
+                        "geometry": Geometry("GEOMETRY", srid=4326),
+                        "properties": JSONB()
+                    }
+                )
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(self.executor, _save)
 
         else:
             sql = text("""
@@ -104,13 +121,16 @@ class GISManager:
                 for r in self.gdf.itertuples(index=False)
             ]
 
-            with self.engine.begin() as conn:
-                conn.execute(sql, data)
+            async with self.async_engine.begin() as conn:
+                await conn.execute(sql, data)
 
     # add feature
-    def add_feature(self, geom_dict, properties: dict, fix_topology=False):
+    async def add_feature(self, geom_dict, properties: dict, fix_topology=False):
         geom = parse_geometry(geom_dict, fmt="geojson", fix_topology=fix_topology)
         validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
+
+        await self.load_from_db()
+
         feature_id = int(self.gdf["feature_id"].max() + 1) if not self.gdf.empty else 1
         new_row = {
             "feature_id": feature_id,
@@ -120,76 +140,14 @@ class GISManager:
 
         self.gdf.loc[len(self.gdf)] = new_row
         self.gdf.set_geometry("geometry", inplace=True)
-        self.save_to_db()
+
+        await self.save_to_db()
         return feature_id
 
+    # buffer
+    async def buffer(self, distance: float, feature_id: int = None):
 
-    def delete_feature(self, feature_id: int):
-        '''delete feature and save to db'''
-        before = len(self.gdf)
-        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
-        deleted = len(self.gdf) < before
-        if deleted:
-            self.save_to_db()  
-        return deleted
-    
-
-    def update_feature(self, feature_id: int, new_geom=None, new_properties=None, fix_topology=False):
-        '''update features [geometry / properties] and save to db'''
-        mask = self.gdf["feature_id"] == feature_id
-        if mask.sum() == 0:
-            raise ValueError("feature not found")
-        
-        if new_geom is not None:
-            geom = parse_geometry(new_geom, fix_topology=fix_topology)
-            validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
-            self.gdf.loc[mask, "geometry"] = geom
-
-        if new_properties is not None:
-            self.gdf.loc[mask, "properties"] = new_properties
-        self.save_to_db(update_only=True)
-        return feature_id
-
-
-    # reproject to target_crs = EPSG:4326
-    def reproject(self, target_crs ="EPSG:4326"):
-        '''
-        Docstring for reproject
-        
-        :param self: Description
-        :param target_crs: Description
-        '''
-        if str(self.gdf.crs) != target_crs:
-            self.gdf = self.gdf.to_crs(target_crs)
-        print(f"reprojected to {target_crs} is done ")
-
-
-    # def buffer(self, distance: float, feature_id: int = None):
-    #     if self.gdf.crs is None:
-    #         self.gdf.set_crs(epsg=4326, inplace=True)
-
-    #     self.load_from_db()
-
-    #     original_crs = self.gdf.crs
-    #     projected = self.gdf.to_crs(epsg=32636)
-
-    #     if feature_id is not None:
-    #         mask = projected["feature_id"] == feature_id
-    #         if mask.sum() == 0:
-    #             raise ValueError(f"feature ID {feature_id} not found")
-    #         projected.loc[mask, "geometry"] = projected.loc[mask, "geometry"].buffer(distance)
-    #     else:
-    #         projected["geometry"] = projected.geometry.buffer(distance)
-
-    #     self.gdf = projected.to_crs(original_crs)
-
-    #     self.save_to_db(update_only=True)
-
-    #     return self.gdf
-
-    def buffer(self, distance: float, feature_id: int = None):
-
-        self.load_from_db()
+        await self.load_from_db()
 
         if feature_id:
             target = self.gdf[self.gdf["feature_id"] == feature_id]
@@ -198,14 +156,20 @@ class GISManager:
         else:
             target = self.gdf
 
-        result_gdf = target.copy()
-        result_gdf["geometry"] = result_gdf.geometry.buffer(distance / 100000.0)  
+        def _buffer():
+            result_gdf = target.copy()
+            result_gdf["geometry"] = result_gdf.geometry.buffer(distance / 100000.0)
+            return result_gdf
 
-        with self.engine.begin() as conn:
+        loop = asyncio.get_running_loop()
+        result_gdf = await loop.run_in_executor(self.executor, _buffer)
+
+        async with self.async_engine.begin() as conn:
             for _, row in result_gdf.iterrows():
-                conn.execute(
+                await conn.execute(
                     text("""
-                        INSERT INTO analysis_results (source_feature_ids, geometry, properties)
+                        INSERT INTO analysis_results
+                        (source_feature_ids, geometry, properties)
                         VALUES (:source_feature_ids, ST_GeomFromText(:geometry, 4326), :properties)
                     """),
                     {
@@ -215,7 +179,9 @@ class GISManager:
                     }
                 )
 
-            result_id = conn.execute(text("SELECT MAX(result_id) FROM analysis_results")).scalar()
+            result_id = await conn.scalar(
+                text("SELECT MAX(result_id) FROM analysis_results")
+            )
 
         return result_id, result_gdf
     
@@ -256,7 +222,7 @@ class GISManager:
 
 
     # simplification =>> tolerance, simplify_coverage, simplify_boundary ==> TRUE
-    # inner edges only =>>> simplify_boundary => fales 
+    # inner edges only =>>> simplify_boundary => false 
 
     def simplification(self,tolerance: float, simplify_coverage: bool = True, simplify_boundary: bool = True ):
         "simplify geometry and save in db"
@@ -290,7 +256,7 @@ class GISManager:
 
     # spatial analysis 
     def nearest_neighbor(self, geom_dict: dict):
-        '''find nearst feature -> read only'''
+        '''find nearest feature -> read only'''
         if self.gdf.empty:
             return None
         geom = shape(geom_dict)
