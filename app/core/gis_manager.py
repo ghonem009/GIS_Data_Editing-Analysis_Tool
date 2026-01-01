@@ -13,10 +13,7 @@ from app.core.geometry_utils import parse_geometry, validate_geometry_type
 
 
 class GISManager:
-    """
-    Manages GIS data operations including CRUD, spatial analysis, and database persistence.
-    Provides asynchronous methods for loading, saving, and analyzing spatial features.
-    """
+
 
     def __init__(self, crs="EPSG:4326"):
         """
@@ -33,19 +30,52 @@ class GISManager:
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.gdf = None
 
+    # async def tables_exist(self):
+    #     """
+    #     ensure required database tables exist (features and analysis_results)
+    #     Creates them if not already present
+    #     """
+    #     metadata = MetaData()
+    #     Table(
+    #         self.results_table,
+    #         metadata,
+    #         Column('result_id', Integer, primary_key=True, autoincrement=True),
+    #         Column('source_feature_ids', ARRAY(Integer)),
+    #         Column('geometry', Geometry('GEOMETRY', srid=4326)),
+    #         Column('properties', JSONB)
+    #     )
+
+    #     async with self.async_engine.begin() as conn:
+    #         await conn.run_sync(metadata.create_all)
+
     async def tables_exist(self):
         """
-        ensure required database tables exist (features and analysis_results)
+        Ensure required database tables exist (features and analysis_results)
         Creates them if not already present
         """
         metadata = MetaData()
+
+        # features table
+        Table(
+            self.features_table,
+            metadata,
+            Column('feature_id', Integer, primary_key=True, autoincrement=True),
+            Column('properties', JSONB),
+            Column('geometry', Geometry('GEOMETRY', srid=4326))
+        )
+
+        # analysis_results table with all columns used in analysis functions
         Table(
             self.results_table,
             metadata,
             Column('result_id', Integer, primary_key=True, autoincrement=True),
+            Column('operation_type', String(50)),
             Column('source_feature_ids', ARRAY(Integer)),
+            Column('parameters', JSONB),
+            Column('description', String(255)),
             Column('geometry', Geometry('GEOMETRY', srid=4326)),
-            Column('properties', JSONB)
+            Column('properties', JSONB),
+            Column('created_at', DateTime, default=datetime.utcnow)
         )
 
         async with self.async_engine.begin() as conn:
@@ -72,7 +102,6 @@ class GISManager:
                 if gdf.crs is None:
                     gdf.set_crs(epsg=4326, inplace=True)
 
-                # fix non-dict properties
                 def fix_properties(properties):
                     if isinstance(properties, dict):
                         return properties
@@ -97,6 +126,7 @@ class GISManager:
         loop = asyncio.get_running_loop()
         self.gdf = await loop.run_in_executor(self.executor, _load)
         return self.gdf
+
 
     async def save_to_db(self, update_only=False):
         """
@@ -149,6 +179,7 @@ class GISManager:
             async with self.async_engine.begin() as conn:
                 await conn.execute(sql, data)
 
+
     async def add_feature(self, geom_dict, properties: dict, fix_topology=False):
         """
         Add a new feature to the dataset.
@@ -177,16 +208,45 @@ class GISManager:
         await self.save_to_db()
         return feature_id
 
+
+    async def update_feature(self, feature_id: int, new_geom=None, new_properties=None, fix_topology=False):
+        """
+        update features [geometry / properties] and save to db
+        """
+        await self.load_from_db()
+        if self.gdf.empty or feature_id not in self.gdf["feature_id"].values:
+            raise ValueError("Feature not found")
+
+        idx = self.gdf[self.gdf["feature_id"] == feature_id].index[0]
+
+        if new_geom:
+            geom = parse_geometry(new_geom, fmt="geojson", fix_topology=fix_topology)
+            validate_geometry_type(geom, allowed_types=["Point", "LineString", "Polygon"])
+            self.gdf.at[idx, "geometry"] = geom
+
+        if new_properties:
+            self.gdf.at[idx, "properties"] = new_properties
+
+        await self.save_to_db(update_only=True)
+        return feature_id
+
+
+    async def delete_feature(self, feature_id: int):
+        """
+        delete feature and save to db
+        """
+        await self.load_from_db()
+        before = len(self.gdf)
+        self.gdf = self.gdf[self.gdf["feature_id"] != feature_id].reset_index(drop=True)
+        deleted = len(self.gdf) < before
+        if deleted:
+            await self.save_to_db()  
+        return deleted
+
+
     async def buffer(self, distance: float, feature_id: int = None):
         """
-        Create buffer zones around one or all features.
-
-        args:
-            distance (float): Buffer distance (in meters).
-            feature_id (int, optional): ID of feature to buffer; if None, applies to all.
-
-        returns:
-            tuple: (result_id, GeoDataFrame) containing buffered results.
+        create buffer for a feature or all features
         """
         await self.load_from_db()
         target = self.gdf[self.gdf["feature_id"] == feature_id] if feature_id else self.gdf
@@ -222,168 +282,212 @@ class GISManager:
             )
 
         return result_id, result_gdf
+    
+    async def clip(self, geom_dict: dict, description: str = None):
+        """Clip features and save result to analysis_results"""
+        await self.load_from_db()
 
-    def get_analysis_results(self, result_id: int = None):
-        """
-        retrieve previous analysis results from the database.
+        def _clip():
+            mask = shape(geom_dict)
+            mask = make_valid(mask) if not mask.is_valid else mask
+            clipped = gpd.clip(self.gdf, mask)
+            source_ids = self.gdf["feature_id"].tolist()
+            return clipped, source_ids
 
-        args:
-            result_id (int, optional): Specific result ID.
+        loop = asyncio.get_running_loop()
+        clipped, source_ids = await loop.run_in_executor(self.executor, _clip)
 
-        returns:
-            GeoDataFrame: Analysis results.
-        """
-        try:
-            query = f"SELECT * FROM {self.results_table}"
-            if result_id:
-                query += f" WHERE result_id = {result_id}"
-            results = gpd.read_postgis(query, self.sync_engine, geom_col="geometry")
-            return results
-        except:
-            return gpd.GeoDataFrame()
+        async with self.async_engine.begin() as conn:
+            for _, row in clipped.iterrows():
+                await conn.execute(
+                    text("""
+                        INSERT INTO analysis_results 
+                        (operation_type, source_feature_ids, parameters, description, geometry, properties)
+                        VALUES (:op, :ids, :params, :desc, ST_GeomFromText(:geom, 4326), :props)
+                    """),
+                    {
+                        "op": "clip",
+                        "ids": source_ids,
+                        "params": json.dumps({"clip_geometry": geom_dict}),
+                        "desc": description,
+                        "geom": row.geometry.wkt,
+                        "props": json.dumps(row.properties, ensure_ascii=False)
+                    }
+                )
+            result = await conn.execute(text("SELECT MAX(result_id) FROM analysis_results"))
+            result_id = result.scalar()
+        return result_id, clipped
 
-    def intersect(self, geom_dict: dict):
-        """
-        find features that intersect with a given geometry 
+    async def simplification(self, tolerance: float, feature_ids: list = None, 
+                            simplify_coverage: bool = True, simplify_boundary: bool = True,
+                            description: str = None):
+        """Simplify geometries and save result"""
+        await self.load_from_db()
 
-        args:
-            geom_dict (dict): Geometry in GeoJSON format 
+        def _simplify():
 
-        returns:
-            GeoDataFrame: Intersected features.
-        """
-        geom = shape(geom_dict)
-        geom = make_valid(geom) if not geom.is_valid else geom
-        return self.gdf[self.gdf.geometry.intersects(geom)]
+            if feature_ids:
+                work_gdf = self.gdf[self.gdf["feature_id"].isin(feature_ids)].copy()
+                source_ids = feature_ids
+            else:
+                work_gdf = self.gdf.copy()
+                source_ids = work_gdf["feature_id"].tolist()
 
-    def clip(self, geom_dict: dict):
-        """
-        Clip features using a geometry mask 
-
-        args:
-            geom_dict (dict): Mask geometry 
-
-        returns:
-            GDF: clipped features
-        """
-        mask = shape(geom_dict)
-        mask = make_valid(mask) if not mask.is_valid else mask
-        clipped = gpd.clip(self.gdf, mask)
-        self.gdf = clipped
-        self.save_to_db()
-        return clipped
-
-    def simplification(self, tolerance: float, simplify_coverage: bool = True, simplify_boundary: bool = True):
-        """
-        simplify geometries to reduce complexity.
-
-        args:
-            tolerance (float): Simplification tolerance.
-            simplify_coverage (bool): Simplify all geometries.
-            simplify_boundary (bool): Simplify shared edges.
-
-        returns:
-            GeoDataFrame: Simplified geometries.
-        """
-        if simplify_coverage:
-            self.gdf["geometry"] = self.gdf.geometry.simplify_coverage(
-                tolerance=tolerance, simplify_boundary=simplify_boundary
+            work_gdf["geometry"] = work_gdf.geometry.simplify(
+                tolerance=tolerance,
+                preserve_topology=simplify_boundary
             )
-        else:
-            self.gdf["geometry"] = self.gdf.geometry.simplify(tolerance)
-        self.save_to_db(update_only=True)
-        return self.gdf
+            return work_gdf, source_ids
 
-    def dissolve(self, by: str):
-        """
-        dissolve features by a shared attribute.
 
-        args:
-            by (str): Attribute column name.
+        loop = asyncio.get_running_loop()
+        simplified, source_ids = await loop.run_in_executor(self.executor, _simplify)
 
-        returns:
-            GeoDataFrame: Dissolved geometries.
-        """
-        self.gdf = self.gdf.dissolve(by=by, as_index=False)
-        return self.gdf
+        async with self.async_engine.begin() as conn:
+            for _, row in simplified.iterrows():
+                await conn.execute(
+                    text("""
+                        INSERT INTO analysis_results 
+                        (operation_type, source_feature_ids, parameters, description, geometry, properties)
+                        VALUES (:op, :ids, :params, :desc, ST_GeomFromText(:geom, 4326), :props)
+                    """),
+                    {
+                        "op": "simplify",
+                        "ids": source_ids,
+                        "params": json.dumps({
+                            "tolerance": tolerance,
+                            "simplify_coverage": simplify_coverage,
+                            "simplify_boundary": simplify_boundary
+                        }),
+                        "desc": description,
+                        "geom": row.geometry.wkt,
+                        "props": json.dumps(row.properties, ensure_ascii=False)
+                    }
+                )
+            result = await conn.execute(text("SELECT MAX(result_id) FROM analysis_results"))
+            result_id = result.scalar()
+        return result_id, simplified
 
-    def union(self, feature_ids: list = None):
-        """
-        union multiple features into a single geometry.
+    async def dissolve(self, by: str, feature_ids: list = None, description: str = None):
+        """Dissolve features by attribute and save result"""
+        await self.load_from_db()
+        if by not in self.gdf.columns:
+    # try to extract it manually from nested properties
+            self.gdf[by] = self.gdf["properties"].apply(
+                lambda p: p.get("properties", {}).get(by) if isinstance(p, dict) else None
+    )
 
-        args:
-            feature_ids (list, optional): IDs of features to union.
-        returns:
-            shapely.Geometry or None: Resulting union geometry.
-        """
-        features = self.gdf[self.gdf['feature_id'].isin(feature_ids)] if feature_ids else self.gdf
-        if len(features) == 0:
-            return None
-        return features.geometry.unary_union
+        def _dissolve():
+            if feature_ids:
+                work_gdf = self.gdf[self.gdf["feature_id"].isin(feature_ids)].copy()
+                source_ids = feature_ids
+            else:
+                work_gdf = self.gdf.copy()
+                source_ids = work_gdf["feature_id"].tolist()
+            dissolved = work_gdf.dissolve(by=by, as_index=False)
+            return dissolved, source_ids
 
-    def nearest_neighbor(self, geom_dict: dict):
-        """
-        find the nearest feature to a given geometry
+        loop = asyncio.get_running_loop()
+        dissolved, source_ids = await loop.run_in_executor(self.executor, _dissolve)
 
-        args:
-            geom_dict (dict): Input geometry
-        returns:
-            dict: nearest feature details including distance in meters
-        """
+        async with self.async_engine.begin() as conn:
+            for _, row in dissolved.iterrows():
+                await conn.execute(
+                    text("""
+                        INSERT INTO analysis_results 
+                        (operation_type, source_feature_ids, parameters, description, geometry, properties)
+                        VALUES (:op, :ids, :params, :desc, ST_GeomFromText(:geom, 4326), :props)
+                    """),
+                    {
+                        "op": "dissolve",
+                        "ids": source_ids,
+                        "params": json.dumps({"dissolve_by": by}),
+                        "desc": description,
+                        "geom": row.geometry.wkt,
+                        "props": json.dumps(row.properties, ensure_ascii=False)
+                    }
+                )
+            result = await conn.execute(text("SELECT MAX(result_id) FROM analysis_results"))
+            result_id = result.scalar()
+        return result_id, dissolved
+
+    async def union(self, feature_ids: list = None):
+        """Union multiple features"""
+        await self.load_from_db()
+
+        def _union():
+            if feature_ids:
+                features = self.gdf[self.gdf['feature_id'].isin(feature_ids)]
+            else:
+                features = self.gdf
+            if len(features) == 0:
+                return None
+            return features.geometry.unary_union
+
+        loop = asyncio.get_running_loop()
+        union_geom = await loop.run_in_executor(self.executor, _union)
+        return union_geom
+
+    async def nearest_neighbor(self, geom_dict: dict):
+        """Find nearest feature to given geometry"""
+        await self.load_from_db()
         if self.gdf.empty:
             return None
 
-        geom = shape(geom_dict)
-        geom = make_valid(geom) if not geom.is_valid else geom
-        original_crs = self.gdf.crs
+        def _nearest():
+            geom = shape(geom_dict)
+            geom = make_valid(geom) if not geom.is_valid else geom
+            original_crs = self.gdf.crs
+            gdf_proj = self.gdf.to_crs(epsg=32636)
+            geom_proj = gpd.GeoSeries([geom], crs=original_crs).to_crs(epsg=32636).iloc[0]
+            distances = gdf_proj.geometry.distance(geom_proj)
+            idx = distances.idxmin()
+            row = self.gdf.loc[idx]
+            return {
+                "feature_id": int(row["feature_id"]),
+                "properties": row["properties"],
+                "geometry": row["geometry"].__geo_interface__,
+                "distance_meters": float(distances.loc[idx])
+            }
 
-        gdf_proj = self.gdf.to_crs(epsg=32636)
-        geom_proj = gpd.GeoSeries([geom], crs=original_crs).to_crs(epsg=32636).iloc[0]
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, _nearest)
 
-        distances = gdf_proj.geometry.distance(geom_proj)
-        idx = distances.idxmin()
-        row = self.gdf.loc[idx]
-
-        return {
-            "feature_id": int(row["feature_id"]),
-            "properties": row["properties"],
-            "geometry": row["geometry"].__geo_interface__,
-            "distance_meters": float(distances.loc[idx])
-        }
-
-    def spatial_join(self, other_gdf, how="inner", predicate="intersects"):
-        """
-        perform a spatial join between current dataset and another GDF
-
-        args:
-            other_gdf (GDF): Secondary dataset
-            how (str): Join type ('inner', 'left', ...)
-            predicate (str): Spatial predicate ('intersects', 'within', ...)
-        returns:
-            GDF: joined features.
-        """
+    async def spatial_join(self, other_gdf, how="inner", predicate="intersects"):
+        """Perform spatial join with another GeoDataFrame"""
+        await self.load_from_db()
         if self.gdf.empty or other_gdf.empty:
             return gpd.GeoDataFrame()
-        return gpd.sjoin(self.gdf, other_gdf, how=how, predicate=predicate)
 
-    def summary_statistics(self, feature_id: int = None):
-        """
-        calculate geometric summary statistics (area, length, centroid)
+        def _join():
+            return gpd.sjoin(self.gdf, other_gdf, how=how, predicate=predicate)
 
-        args:
-            feature_id (int, optional): Specific feature ID.
-        returns:
-            list[dict]: list of statistics for each feature.
-        """
-        df = self.gdf if feature_id is None else self.gdf[self.gdf["feature_id"] == feature_id]
-        stats = []
-        for _, row in df.iterrows():
-            geom = row.geometry
-            stats.append({
-                "feature_id": row.feature_id,
-                "area": geom.area,
-                "length": geom.length,
-                "centroid": geom.centroid.__geo_interface__,
-                "bounding_box": geom.bounds
-            })
-        return stats
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, _join)
+
+    async def get_analysis_results(self, result_id: int = None, operation_type: str = None):
+        """Retrieve analysis results"""
+        query = f"SELECT * FROM {self.results_table} WHERE 1=1"
+        if result_id:
+            query += f" AND result_id = {result_id}"
+        if operation_type:
+            query += f" AND operation_type = '{operation_type}'"
+        query += " ORDER BY created_at DESC"
+
+        def _load_results():
+            try:
+                return gpd.read_postgis(query, self.sync_engine, geom_col="geometry")
+            except:
+                return gpd.GeoDataFrame()
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self.executor, _load_results)
+
+    async def delete_analysis_result(self, result_id: int):
+        """Delete an analysis result"""
+        async with self.async_engine.begin() as conn:
+            result = await conn.execute(
+                text(f"DELETE FROM {self.results_table} WHERE result_id = :id"),
+                {"id": result_id}
+            )
+            return result.rowcount > 0

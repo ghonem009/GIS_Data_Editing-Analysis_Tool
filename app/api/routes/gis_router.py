@@ -162,16 +162,9 @@ async def clip_operation(data: GeometryRequest):
 
 
 @analysis_router.post("/nearest")
-def nearest_operation(data: GeometryRequest):
-    """
-    find nearest feature to a given geometry
-    args:
-        data (GeometryRequest): input geometry
-    returns:
-        dict: Nearest feature details
-    """
+async def nearest_operation(data: GeometryRequest):
     try:
-        result = gis.nearest_neighbor(data.geometry)
+        result = await gis.nearest_neighbor(data.geometry)
         if result is None:
             raise HTTPException(status_code=404, detail="No features found for nearest neighbor")
         return {"status": "success", "operation": "nearest", "result": result}
@@ -208,8 +201,32 @@ def spatial_join_endpoint(other_file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Spatial join failed: {str(e)}")
 
 
+# @analysis_router.post("/union")
+# def union_operation(data: UnionRequest):
+#     """
+#     Union multiple features into one geometry
+
+#     args:
+#         data (unionRequest): List of feature ids
+#     returns:
+#         dict: union geometry and type
+#     """
+#     try:
+#         union_geom = gis.union(feature_ids=data.feature_ids)
+#         if union_geom is None:
+#             raise HTTPException(status_code=400, detail="No features to union")
+#         return {
+#             "status": "success",
+#             "operation": "union",
+#             "feature_ids": data.feature_ids,
+#             "geometry_type": union_geom.geom_type,
+#             "result_geometry": mapping(union_geom)
+#         }
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Union operation failed: {str(e)}")
+
 @analysis_router.post("/union")
-def union_operation(data: UnionRequest):
+async def union_operation(data: UnionRequest):
     """
     Union multiple features into one geometry
 
@@ -219,7 +236,7 @@ def union_operation(data: UnionRequest):
         dict: union geometry and type
     """
     try:
-        union_geom = gis.union(feature_ids=data.feature_ids)
+        union_geom = await gis.union(feature_ids=data.feature_ids)
         if union_geom is None:
             raise HTTPException(status_code=400, detail="No features to union")
         return {
@@ -233,6 +250,7 @@ def union_operation(data: UnionRequest):
         raise HTTPException(status_code=500, detail=f"Union operation failed: {str(e)}")
 
 
+
 @analysis_router.post("/simplify")
 async def simplify_operation(data: SimplifyRequest):
     """
@@ -244,7 +262,7 @@ async def simplify_operation(data: SimplifyRequest):
         dict: Simplification status and tolerance used
     """
     try:
-        await gis.simplification(
+        result_id, simplified = await gis.simplification(
             tolerance=data.tolerance,
             simplify_coverage=data.simplify_coverage,
             simplify_boundary=data.simplify_boundary
@@ -252,32 +270,31 @@ async def simplify_operation(data: SimplifyRequest):
         return {
             "status": "success",
             "operation": "simplify",
-            "tolerance": data.tolerance
+            "tolerance": data.tolerance,
+            "result_id": result_id,
+            "count": len(simplified)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Simplify operation failed: {str(e)}")
 
 
 @analysis_router.post("/dissolve")
-def dissolve_operation(data: DissolveRequest):
+async def dissolve_operation(data: DissolveRequest):
     """
-    dissolve features by an attribute
+    Dissolve features by an attribute
     args:
         data (DissolveRequest): attribute name
-
     returns:
         dict: counts before and after dissolve
     """  
     try:
-        original_count = len(gis.gdf)
-        gis.dissolve(by=data.by)
-        dissolved_count = len(gis.gdf)
+        result_id, dissolved = await gis.dissolve(by=data.by)
         return {
             "status": "success",
             "operation": "dissolve",
             "attribute": data.by,
-            "original_features": original_count,
-            "dissolved_features": dissolved_count
+            "result_id": result_id,
+            "count": len(dissolved)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Dissolve operation failed: {str(e)}")
