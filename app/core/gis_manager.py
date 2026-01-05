@@ -14,7 +14,6 @@ from app.core.geometry_utils import parse_geometry, validate_geometry_type
 
 class GISManager:
 
-
     def __init__(self, crs="EPSG:4326"):
         """
         initialize the GISManager
@@ -29,6 +28,7 @@ class GISManager:
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.gdf = None
 
+
     async def tables_exist(self):
         """
         ensure required tables exist (feature and metadata)
@@ -42,6 +42,7 @@ class GISManager:
             Column('properties', JSONB),
             Column('geometry', Geometry('GEOMETRY', srid=4326))            
         )
+
         Table(
             "analysis_metadata",
             metadata,
@@ -54,6 +55,7 @@ class GISManager:
 
         async with self.async_engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+
 
     async def load_from_db(self, table_name=None):
         """
@@ -72,6 +74,7 @@ class GISManager:
                     self.sync_engine,
                     geom_col="geometry"
                 )
+
                 if gdf.crs is None:
                     gdf.set_crs(epsg=4326, inplace=True)
 
@@ -108,6 +111,7 @@ class GISManager:
             update_only (bool): If True only updates existing records; otherwise replaces the table
         """
         if not update_only:
+
             def _save():
                 temp_gdf = self.gdf.copy()
                 temp_gdf["properties"] = temp_gdf["properties"].apply(
@@ -159,7 +163,6 @@ class GISManager:
             geom_dict (dict): Geometry in GeoJSON format
             properties (dict): Feature attributes
             fix_topology (bool): Auto-fix invalid geometries
-
         returns:
             int: Newly created feature ID
         """
@@ -214,9 +217,13 @@ class GISManager:
             await self.save_to_db()  
         return deleted
 
-     # analysis operations
+
+    # === analysis operations ===
+
     async def _create_analysis_table(self, gdf: gpd.GeoDataFrame, operation: str, params: dict):
-        """Create a new table for each analysis operation"""
+        """
+        Create a new table for each analysis operation
+        """
         table_name = f"analysis_{operation}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         async with self.async_engine.begin() as conn:
@@ -240,25 +247,17 @@ class GISManager:
                         INSERT INTO {table_name} (feature_id, geometry, properties)
                         VALUES (:fid, ST_GeomFromText(:geom, 4326), :props)
                     """),
-                    {
-                        "fid": int(row["feature_id"]),
-                        "geom": row.geometry.wkt,
-                        "props": row["properties"]
-                    }
+                    {"fid": int(row["feature_id"]), "geom": row.geometry.wkt, "props": row["properties"]}
                 )
 
             await conn.execute(text("""
                 INSERT INTO analysis_metadata (operation_type, parameters, result_table_name)
                 VALUES (:op, :params, :table)
-            """), {
-                "op": operation,
-                "params": json.dumps(params),
-                "table": table_name
-            })
+            """), {"op": operation, "params": json.dumps(params), "table": table_name})
 
         return table_name
 
-    
+
     async def buffer(self, distance: float, feature_id: int = None):
         """
         create buffer for a feature or all features
@@ -279,24 +278,54 @@ class GISManager:
 
         table_name = await self._create_analysis_table(result_gdf, "buffer", {"distance": distance})
         return table_name, result_gdf
-    
+
+
     async def clip(self, geom_dict: dict, feature_ids: list = None, description: str = None):
-        """Clip features by given geometry"""
+        """
+        Clip features by given geometry
+        """
         await self.load_from_db()
-        if self.gdf.empty: return None
+        if self.gdf.empty: 
+            return None
+
         clip_geom = shape(geom_dict)
         clip_geom = make_valid(clip_geom) if not clip_geom.is_valid else clip_geom
+
         def _clip():
             work_gdf = self.gdf[self.gdf["feature_id"].isin(feature_ids)].copy() if feature_ids else self.gdf.copy()
             clipped = gpd.clip(work_gdf, clip_geom)
             return clipped
+
         loop = asyncio.get_running_loop()
         clipped_gdf = await loop.run_in_executor(self.executor, _clip)
+
         table_name = await self._create_analysis_table(clipped_gdf, "clip", {"clip_geometry": geom_dict})
         return table_name, clipped_gdf
 
+
+    async def intersect(self, geom_dict: dict):
+        """
+        Perform intersection between stored features and a given geometry
+        """
+        gdf = await self.load_from_db()
+        if gdf.empty:
+            raise ValueError("No features available for intersection")
+
+        def _intersect():
+            mask = shape(geom_dict)
+            mask = make_valid(mask) if not mask.is_valid else mask
+            intersected = gdf[gdf.intersects(mask)]
+            return intersected
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(self.executor, _intersect)
+        return result
+
+
     async def simplification(self, tolerance: float, feature_ids: list = None):
-        """Simplify geometries and save result"""
+        """
+        Simplify geometries and save result
+        """
         await self.load_from_db()
 
         def _simplify():
@@ -312,9 +341,14 @@ class GISManager:
 
         table_name = await self._create_analysis_table(simplified, "simplify", {"tolerance": tolerance})
         return table_name, simplified
-    
+
+
     async def dissolve(self, by: str, feature_ids: list = None):
+        """
+        Dissolve features by an attribute
+        """
         await self.load_from_db()
+
         if by not in self.gdf.columns:
             self.gdf[by] = self.gdf["properties"].apply(
                 lambda p: p.get("properties", {}).get(by) if isinstance(p, dict) else None
@@ -334,21 +368,31 @@ class GISManager:
         table_name = await self._create_analysis_table(dissolved, "dissolve", {"by": by})
         return table_name, dissolved
 
+
     async def union(self, feature_ids: list = None):
-        """Union multiple features"""
+        """
+        Union multiple features
+        """
         await self.load_from_db()
 
         def _union():
             features = self.gdf[self.gdf['feature_id'].isin(feature_ids)] if feature_ids else self.gdf
-            if len(features) == 0: return None
+            if len(features) == 0: 
+                return None
             return features.geometry.unary_union
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, _union)
 
+
     async def nearest_neighbor(self, geom_dict: dict):
-        """Find nearest feature to given geometry"""
+        """
+        Find nearest feature to given geometry
+        """
         await self.load_from_db()
-        if self.gdf.empty: return None
+        if self.gdf.empty: 
+            return None
+
         def _nearest():
             geom = shape(geom_dict)
             geom = make_valid(geom) if not geom.is_valid else geom
@@ -357,34 +401,59 @@ class GISManager:
             distances = gdf_proj.geometry.distance(geom_proj)
             idx = distances.idxmin()
             row = self.gdf.loc[idx]
-            return {"feature_id": int(row["feature_id"]), "properties": row["properties"], "geometry": row["geometry"].__geo_interface__, "distance_meters": float(distances.loc[idx])}
+            return {
+                "feature_id": int(row["feature_id"]),
+                "properties": row["properties"],
+                "geometry": row["geometry"].__geo_interface__,
+                "distance_meters": float(distances.loc[idx])
+            }
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, _nearest)
-    
+
 
     async def spatial_join(self, other_gdf, how="inner", predicate="intersects"):
-        """Perform spatial join with another GeoDataFrame"""
+        """
+        Perform spatial join with another GeoDataFrame
+        """
         await self.load_from_db()
-        if self.gdf.empty or other_gdf.empty: return gpd.GeoDataFrame()
-        def _join(): return gpd.sjoin(self.gdf, other_gdf, how=how, predicate=predicate)
+        if self.gdf.empty or other_gdf.empty: 
+            return gpd.GeoDataFrame()
+
+        def _join():
+            return gpd.sjoin(self.gdf, other_gdf, how=how, predicate=predicate)
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, _join)
 
+
     async def get_analysis_results(self, result_id: int = None, operation_type: str = None):
-        """Retrieve analysis results"""
+        """
+        Retrieve analysis results
+        """
         query = f"SELECT * FROM {self.results_table} WHERE 1=1"
-        if result_id: query += f" AND result_id = {result_id}"
-        if operation_type: query += f" AND operation_type = '{operation_type}'"
+        if result_id: 
+            query += f" AND result_id = {result_id}"
+        if operation_type: 
+            query += f" AND operation_type = '{operation_type}'"
         query += " ORDER BY created_at DESC"
+
         def _load_results():
-            try: return gpd.read_postgis(query, self.sync_engine, geom_col="geometry")
-            except: return gpd.GeoDataFrame()
+            try:
+                return gpd.read_postgis(query, self.sync_engine, geom_col="geometry")
+            except:
+                return gpd.GeoDataFrame()
+
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self.executor, _load_results)
-    
+
 
     async def delete_analysis_result(self, result_id: int):
-        """Delete an analysis result"""
+        """
+        Delete an analysis result
+        """
         async with self.async_engine.begin() as conn:
-            result = await conn.execute(text(f"DELETE FROM {self.results_table} WHERE result_id = :id"), {"id": result_id})
+            result = await conn.execute(
+                text(f"DELETE FROM {self.results_table} WHERE result_id = :id"), {"id": result_id}
+            )
             return result.rowcount > 0

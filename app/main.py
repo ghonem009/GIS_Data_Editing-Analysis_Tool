@@ -4,14 +4,14 @@ from app.core.gis_manager import GISManager
 
 app = FastAPI(title="GIS Backend")
 
-app.include_router(feature_router)
-app.include_router(analysis_router)
-
 gis = GISManager()
 
 @app.on_event("startup")
-async def setup_db():
+async def startup_event():
     await gis.tables_exist()
+
+app.include_router(feature_router)
+app.include_router(analysis_router)
 
 @app.get("/")
 def home():

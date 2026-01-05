@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import JSONResponse
 from app.core.gis_manager import GISManager
 from app.schemas.feature_schemas import (FeatureCreate,FeatureUpdate,BufferRequest,GeometryRequest,UnionRequest,SimplifyRequest,DissolveRequest)
@@ -7,7 +7,6 @@ import os
 import json
 from shapely.geometry import mapping
 import geopandas as gpd
-from fastapi import Query
 
 
 feature_router = APIRouter(prefix="/feature", tags=["Feature Editing"])
@@ -17,6 +16,7 @@ gis = GISManager()
 
 
 # ==>> features endpoints
+
 @feature_router.post("/add")
 async def add_feature(data: FeatureCreate):
     """
@@ -43,7 +43,7 @@ async def update_feature(feature_id: int, data: FeatureUpdate):
     update an existing feature
     args:
         feature_id: int 
-        data(FeatureCreate): new geometry and/or properties
+        data(FeatureUpdate): new geometry and/or properties
     returns:
         dict : status and updated feature_id
     """
@@ -61,11 +61,10 @@ async def update_feature(feature_id: int, data: FeatureUpdate):
         raise HTTPException(status_code=500, detail=f"Update feature failed: {str(e)}")
 
 
-
 @feature_router.delete("/{feature_id}/delete")
 async def delete_feature(feature_id: int):
     """
-    Delete a feature by id
+    delete a feature by id
     args:
         features_id: int
     return:
@@ -82,7 +81,8 @@ async def delete_feature(feature_id: int):
 
 @feature_router.get("/show")
 def show_features():
-    """return:
+    """
+    return:
         JSONResponse: all features as geojson
     """
     try:
@@ -91,16 +91,11 @@ def show_features():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load features: {str(e)}")
 
+
 # ==>> spatial analysis endpoints
+
 @analysis_router.post("/buffer")
 async def buffer_operation(data: BufferRequest):
-    """
-    create buffer zones around features
-    args:
-        data (BufferRequest): distance and optional feature_id
-    returns:
-        dict: status, operation name, and result layer id
-    """
     try:
         result_id, _ = await gis.buffer(
             distance=data.distance,
@@ -120,16 +115,9 @@ async def buffer_operation(data: BufferRequest):
 
 
 @analysis_router.post("/intersect")
-def intersect_operation(data: GeometryRequest):
-    """
-    intersect existing features with a geometry
-    args:
-        data (GeometryRequest): input geometry
-    returns:
-        dict: status, count, resulting features
-    """
+async def intersect_operation(data: GeometryRequest):
     try:
-        intersected = gis.intersect(data.geometry)
+        intersected = await gis.intersect(data.geometry)
         return {
             "status": "success",
             "operation": "intersect",
@@ -142,15 +130,8 @@ def intersect_operation(data: GeometryRequest):
 
 @analysis_router.post("/clip")
 async def clip_operation(data: GeometryRequest):
-    """
-    clip features by an input geometry
-    args:
-        data (GeometryRequest): clip boundary geometry
-    returns:
-        dict: Status, count, and resulting clipped features
-    """
     try:
-        clipped = gis.clip(data.geometry)
+        table_name, clipped = await gis.clip(data.geometry)
         return {
             "status": "success",
             "operation": "clip",
@@ -167,21 +148,17 @@ async def nearest_operation(data: GeometryRequest):
         result = await gis.nearest_neighbor(data.geometry)
         if result is None:
             raise HTTPException(status_code=404, detail="No features found for nearest neighbor")
-        return {"status": "success", "operation": "nearest", "result": result}
+        return {
+            "status": "success",
+            "operation": "nearest",
+            "result": result
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Nearest operation failed: {str(e)}")
 
 
 @analysis_router.post("/spatial-join")
-def spatial_join_endpoint(other_file: UploadFile = File(...)):
-    """
-    perform a spatial join with an uploaded dataset
-
-    args:
-        other_file (uploadFile): spatial file (geojson or shapefile, ...)
-    returns:
-        dict: joined features and count
-    """
+async def spatial_join_endpoint(other_file: UploadFile = File(...)):
     try:
         path = os.path.join(DATA_DIR, other_file.filename)
         content = other_file.file.read()
@@ -189,7 +166,7 @@ def spatial_join_endpoint(other_file: UploadFile = File(...)):
             f.write(content)
 
         other_gdf = gpd.read_file(path)
-        joined = gis.spatial_join(other_gdf)
+        joined = await gis.spatial_join(other_gdf)
 
         return {
             "status": "success",
@@ -203,14 +180,6 @@ def spatial_join_endpoint(other_file: UploadFile = File(...)):
 
 @analysis_router.post("/union")
 async def union_operation(data: UnionRequest):
-    """
-    Union multiple features into one geometry
-
-    args:
-        data (unionRequest): List of feature ids
-    returns:
-        dict: union geometry and type
-    """
     try:
         union_geom = await gis.union(feature_ids=data.feature_ids)
         if union_geom is None:
@@ -226,23 +195,10 @@ async def union_operation(data: UnionRequest):
         raise HTTPException(status_code=500, detail=f"Union operation failed: {str(e)}")
 
 
-
 @analysis_router.post("/simplify")
 async def simplify_operation(data: SimplifyRequest):
-    """
-    simplify geometries.
-
-    args:
-        data (SimplifyRequest): tolerance and simplify options
-    returns:
-        dict: Simplification status and tolerance used
-    """
     try:
-        result_id, simplified = await gis.simplification(
-            tolerance=data.tolerance,
-            simplify_coverage=data.simplify_coverage,
-            simplify_boundary=data.simplify_boundary
-        )
+        result_id, simplified = await gis.simplification(tolerance=data.tolerance)
         return {
             "status": "success",
             "operation": "simplify",
@@ -256,13 +212,6 @@ async def simplify_operation(data: SimplifyRequest):
 
 @analysis_router.post("/dissolve")
 async def dissolve_operation(data: DissolveRequest):
-    """
-    Dissolve features by an attribute
-    args:
-        data (DissolveRequest): attribute name
-    returns:
-        dict: counts before and after dissolve
-    """  
     try:
         result_id, dissolved = await gis.dissolve(by=data.by)
         return {
@@ -274,25 +223,3 @@ async def dissolve_operation(data: DissolveRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Dissolve operation failed: {str(e)}")
-
-
-@analysis_router.get("/results")
-def show_analysis_results():
-    """
-    show results of previous analysis operations
-
-    Returns:
-        dict: count and result features
-    """
-    try:
-        results = gis.get_analysis_results()
-        if results.empty:
-            return {"status": "success", "count": 0, "message": "No results yet"}
-
-        return {
-            "status": "success",
-            "count": len(results),
-            "results": json.loads(results.to_json())
-        }
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
