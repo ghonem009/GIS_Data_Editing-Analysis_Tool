@@ -201,30 +201,6 @@ def spatial_join_endpoint(other_file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Spatial join failed: {str(e)}")
 
 
-# @analysis_router.post("/union")
-# def union_operation(data: UnionRequest):
-#     """
-#     Union multiple features into one geometry
-
-#     args:
-#         data (unionRequest): List of feature ids
-#     returns:
-#         dict: union geometry and type
-#     """
-#     try:
-#         union_geom = gis.union(feature_ids=data.feature_ids)
-#         if union_geom is None:
-#             raise HTTPException(status_code=400, detail="No features to union")
-#         return {
-#             "status": "success",
-#             "operation": "union",
-#             "feature_ids": data.feature_ids,
-#             "geometry_type": union_geom.geom_type,
-#             "result_geometry": mapping(union_geom)
-#         }
-#     except Exception as e:
-#         raise HTTPException(status_code=500, detail=f"Union operation failed: {str(e)}")
-
 @analysis_router.post("/union")
 async def union_operation(data: UnionRequest):
     """
