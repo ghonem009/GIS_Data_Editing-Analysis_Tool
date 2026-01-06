@@ -1,3 +1,6 @@
+import asyncio
+from sqlalchemy.dialects.postgresql import JSONB
+from geoalchemy2 import Geometry
 from fastapi import APIRouter, HTTPException, UploadFile, File, Query
 from fastapi.responses import JSONResponse
 from app.core.gis_manager import GISManager
@@ -7,7 +10,9 @@ import os
 import json
 from shapely.geometry import mapping
 import geopandas as gpd
-
+from shapely.validation import make_valid
+import math
+import pandas as pd
 
 feature_router = APIRouter(prefix="/feature", tags=["Feature Editing"])
 analysis_router = APIRouter(prefix="/analysis", tags=["Spatial Analysis"])
@@ -16,6 +21,58 @@ gis = GISManager()
 
 
 # ==>> features endpoints
+
+@feature_router.post("/upload")
+async def upload_dataset(file: UploadFile = File(...)):
+    try:
+        allowed = [".geojson", ".shp"]
+        _, ext = os.path.splitext(file.filename.lower())
+        if ext not in allowed:
+            raise HTTPException(status_code=400, detail="Only GeoJSON or Shapefile formats are allowed.")
+
+        path = os.path.join(DATA_DIR, file.filename)
+        with open(path, "wb") as f:
+            f.write(await file.read())
+
+        gdf = gpd.read_file(path)
+        if gdf.empty:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty or invalid.")
+
+        if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+            gdf = gdf.set_crs(epsg=4326, allow_override=True)
+
+        gdf["properties"] = gdf.drop(columns=["geometry"]).apply(lambda x: x.to_dict(), axis=1)
+
+        await gis.load_from_db()
+        max_id = gis.gdf["feature_id"].max() + 1 if not gis.gdf.empty else 1
+
+        gdf.insert(0, "feature_id", range(int(max_id), int(max_id) + len(gdf)))
+        gdf = gdf[["feature_id", "properties", "geometry"]]
+
+        def clean_json(obj):
+            for k, v in obj.items():
+                if isinstance(v, float) and math.isnan(v):
+                    obj[k] = None
+            return json.dumps(obj)
+
+        gdf["properties"] = gdf["properties"].apply(clean_json)
+
+        gdf.to_postgis(
+            name=gis.features_table,
+            con=gis.sync_engine,
+            if_exists="append",
+            index=False,
+            dtype={"geometry": Geometry("GEOMETRY", srid=4326), "properties": JSONB()}
+        )
+
+        if os.path.exists(path):
+            os.remove(path)
+
+        return {"status": "success", "count": len(gdf), "message": "Dataset uploaded successfully."}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
 
 @feature_router.post("/add")
 async def add_feature(data: FeatureCreate):
